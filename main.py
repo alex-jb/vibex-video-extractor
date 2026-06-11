@@ -156,17 +156,45 @@ def _extract_douyin(url: str) -> tuple[Path, dict]:
 
 
 def _extract_xiaohongshu(url: str) -> tuple[Path, dict]:
-    """Phase 2 placeholder.
+    """Phase 2 placeholder with best-effort yt-dlp generic extraction.
 
-    yt-dlp does NOT have an official Xiaohongshu extractor. The plan is to
-    vendor JoeanAmier/XHS-Downloader extraction logic under a GPL-3.0 boundary
-    (run as a sibling subprocess to keep license isolation). Until then, return
-    a clear 501 so callers can fall back to mp4 upload UI.
+    yt-dlp does NOT have an official Xiaohongshu extractor. We try the generic
+    extractor first — it sometimes resolves direct mp4 links from xhslink short
+    URLs. When that fails, raise a clean 501 so the vibex UI auto-switches to
+    mp4 upload mode.
+
+    Future Phase 2 plan: vendor JoeanAmier/XHS-Downloader extraction logic
+    under a GPL-3.0 sibling subprocess to keep license isolation. Tracked
+    in repo issue #1.
     """
+    # Best-effort: yt-dlp generic extractor with cookies. Most XHS URLs will
+    # fail this; the ones that succeed are usually older / non-DRMd / direct.
+    workdir = tempfile.mkdtemp(prefix="xhs-", dir=str(TMP_DIR))
+    out_template = str(Path(workdir) / "%(id)s.%(ext)s")
+    opts = _build_ydl_opts(out_template)
+    opts["force_generic_extractor"] = True
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        candidates = sorted(Path(workdir).glob("*"))
+        mp4s = [p for p in candidates if p.suffix.lower() in (".mp4", ".mov", ".webm")]
+        if mp4s:
+            print(f"[xhs] generic extractor surprise-win: {url}")
+            return mp4s[0], info or {}
+    except Exception as e:
+        # Expected — generic extractor usually fails on XHS. Log and fall
+        # through to the 501.
+        print(f"[xhs] generic extractor declined as expected: {type(e).__name__}")
+
     raise HTTPException(
         501,
-        "Xiaohongshu URL extraction not yet implemented — Phase 2. "
-        "For now, download the .mp4 manually and use the upload path.",
+        "Xiaohongshu URL extraction is Phase 2 in this sidecar. "
+        "yt-dlp has no official extractor for xiaohongshu.com. "
+        "Workaround: download the .mp4 manually (xhs-downloader Python lib, "
+        "or browser DevTools Network tab on xiaohongshu.com/explore/<id>) "
+        "and use the /tools/video-decode upload mode instead. "
+        "Phase 2 will vendor JoeanAmier/XHS-Downloader logic.",
     )
 
 
