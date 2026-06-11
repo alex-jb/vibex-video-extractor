@@ -1,0 +1,67 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pytest
+
+      - name: Ruff lint
+        run: ruff check main.py
+
+      - name: Smoke test — import + auth check
+        env:
+          BEARER_TOKEN: smoke-test-token
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from main import app, _platform_of, _check_auth
+          # Platform detection
+          assert _platform_of('https://v.douyin.com/abc/') == 'douyin'
+          assert _platform_of('https://www.xiaohongshu.com/explore/x') == 'xiaohongshu'
+          assert _platform_of('https://example.com/') == 'unknown'
+          # Auth — should reject bad token
+          try:
+              _check_auth('Bearer wrong')
+              assert False, 'should have raised'
+          except Exception as e:
+              assert '401' in str(e) or 'invalid' in str(e).lower()
+          print('smoke test passed')
+          "
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t vibex-video-extractor:ci .
+      - name: Verify image starts
+        run: |
+          docker run -d --name extractor -p 8000:8000 \
+            -e BEARER_TOKEN=ci-token vibex-video-extractor:ci
+          sleep 3
+          curl -fsS http://localhost:8000/healthz | grep '"ok": true'
+          docker logs extractor
+          docker stop extractor
